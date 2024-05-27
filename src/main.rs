@@ -21,12 +21,15 @@ struct Bounds {
     physical_max: f32
 }
 impl Bounds {
-    fn scale(&self, &value: &i16) -> f32 {
+    fn scale(&self, &value: &i16) -> Option<f32> {
+        if value == i16::MIN {
+            return None;
+        }
         let value: f32 = value as f32;
         let digital_range: f32 = self.digital_max - self.digital_min;
         let physical_range: f32 = self.physical_max - self.physical_min;
 
-        ((value - self.digital_min) * physical_range / digital_range) + self.physical_min
+        Some(((value - self.digital_min) * physical_range / digital_range) + self.physical_min)
     }
 }
 
@@ -213,6 +216,15 @@ fn read_record_samples(reader: &mut BufReader<File>, num_signals: usize, num_sam
     Ok(values)
 }
 
+fn increment_timestamp(mut timestamp: Instant, interval: Duration) -> Instant {
+    timestamp = timestamp + interval;
+    if timestamp.milliseconds() >= 1000 {
+        let seconds: i64 = timestamp.seconds() + (timestamp.milliseconds() / 1000) as i64;
+        let milliseconds = timestamp.milliseconds() % 1000;
+        timestamp = Instant::at_ms(seconds, milliseconds);
+    }
+    timestamp
+}
 
 fn parse_edf(file_path: &mut PathBuf, target_dir: &Path) -> Result<(), EdfError> {
     let f: File = File::open(&file_path)?;
@@ -255,25 +267,24 @@ fn parse_edf(file_path: &mut PathBuf, target_dir: &Path) -> Result<(), EdfError>
         row.push(signal.dimension.clone());
     }
     writer.write_record(&row)?;
-    row.clear();
 
     for _ in 0..num_records {
         let values: Vec<i16> = read_record_samples(&mut reader, num_signals, num_samples)?;
         for i in 0..num_samples {
+            row.clear();
             row.push(LocalDateTime::from_instant(timestamp).iso().to_string());
+
             for j in 0..num_signals {
                 let val: &i16 = &values[i + j * num_samples];
-                row.push(signals[j].bounds.scale(val).to_string());
+                let cleaned_val: String = match signals[j].bounds.scale(val) {
+                    Some(scaled) => scaled.to_string(),
+                    None => "".to_string()
+                };
+                row.push(cleaned_val);
             }
             writer.write_record(&row)?;
-            row.clear();
 
-            timestamp = timestamp + sample_interval;
-            if timestamp.milliseconds() >= 1000 {
-                let seconds: i64 = timestamp.seconds() + (timestamp.milliseconds() / 1000) as i64;
-                let milliseconds = timestamp.milliseconds() % 1000;
-                timestamp = Instant::at_ms(seconds, milliseconds);
-            }
+            timestamp = increment_timestamp(timestamp, sample_interval);
         }
     }
     Ok(())
@@ -319,7 +330,7 @@ fn get_status_logger() -> Writer<File> {
 
 
 fn main() {
-    let target_dir: &Path = Path::new("edf_to_csv_files/");
+    let target_dir: &Path = Path::new("./edf_to_csv_files/");
     fs::create_dir_all(target_dir).unwrap();
 
 
